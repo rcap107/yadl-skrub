@@ -112,7 +112,11 @@ def prepare_ranking(containment_list: list[tuple], budget: int):
     return ranking.rows()
 
 
-def execute_join(base_table: pl.DataFrame, candidate_list: dict[tuple], multiaggjoiner_params: dict | None = None):
+def execute_join(
+    base_table: pl.DataFrame,
+    candidate_list: dict[tuple],
+    multiaggjoiner_params: dict | None = None,
+):
     """Execute a full join between the base table and all candidates.
 
     Args:
@@ -122,7 +126,7 @@ def execute_join(base_table: pl.DataFrame, candidate_list: dict[tuple], multiagg
 
     join_tables = []
     join_keys = []
-    main_keys= []
+    main_keys = []
     for candidate in candidate_list:
         main_table_key, aux_table, aux_table_key, similarity = candidate
         table = pl.read_parquet(aux_table)
@@ -137,7 +141,7 @@ def execute_join(base_table: pl.DataFrame, candidate_list: dict[tuple], multiagg
         aux_tables=join_tables,
         aux_keys=join_keys,
         main_keys=main_keys,
-        **multiaggjoiner_params
+        **multiaggjoiner_params,
     )
     # execute join between X and the candidates
     _joined_table = aggjoiner.fit_transform(base_table)
@@ -151,18 +155,24 @@ class Discover(BaseEstimator):
     def __init__(
         self,
         path_tables: list,
-        query_columns: list | str, # TODO: maybe query_columns should be optional? depends on the caching
+        query_columns: (
+            list | str
+        ),  # TODO: maybe query_columns should be optional? depends on the caching
         path_cache: str | Path = None,
         budget=30,
+        multiaggjoiner_params: dict | None = None,
     ) -> None:
         # Assign parameters
         self.query_columns = query_columns
         self.budget = budget
         self.path_tables = path_tables
         self.path_cache = path_cache
+        self.multiaggjoiner_params = multiaggjoiner_params
 
+        # Instantiate internal parameters
         self._ranking = None
         self._unique_values_candidates = {}
+        self._candidate_paths = None
 
     def fit(self, X: pl.DataFrame, y=None):
         # Having more than 1 colummn is not supported.
@@ -173,10 +183,10 @@ class Discover(BaseEstimator):
                 raise pl.ColumnNotFoundError(f"Column {col} not found in X.")
 
         # load list of tables
-        self.candidate_paths = load_table_paths(self.path_tables)
+        self._candidate_paths = load_table_paths(self.path_tables)
 
         # find unique values for each table
-        for table_path in self.candidate_paths:
+        for table_path in self._candidate_paths:
             table = pl.read_parquet(table_path)
             self._unique_values_candidates[table_path] = find_unique_values(table)
 
@@ -190,7 +200,7 @@ class Discover(BaseEstimator):
         self._ranking = prepare_ranking(containment_list, budget=self.budget)
 
     def transform(self, X):
-        _joined = execute_join(X, self._ranking)
+        _joined = execute_join(X, self._ranking, self.multiaggjoiner_params)
         return _joined
 
     def fit_transform(self, X, y):
