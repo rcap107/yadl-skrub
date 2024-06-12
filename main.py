@@ -7,11 +7,14 @@ from skrub import MultiAggJoiner
 from sklearn.base import BaseEstimator
 
 
-def load_table_paths(path_to_tables: str | Path):
+def load_table_paths(path_to_tables: str | Path) -> list:
     """Given `path_to_tables`, load all tables in memory and return them as a list.
 
     Args:
         path_to_tables (str | Path): Path to the tables.
+
+    Returns:
+        The list of paths that was found by expanding `path_to_tables`.
     """
     table_list = []
     # path expansion, search for tables
@@ -28,6 +31,9 @@ def find_unique_values(table: pl.DataFrame, columns: list[str] = None) -> dict:
     Args:
         table (pl.DataFrame): Table to evaluate.
         columns (list[str], optional): List of columns to evaluate. If None, consider all columns.
+
+    Returns:
+        A dict that contains the unique values found for each selected column.
     """
     # select the columns of interest
     if columns is not None:
@@ -38,7 +44,8 @@ def find_unique_values(table: pl.DataFrame, columns: list[str] = None) -> dict:
             if col not in table.columns:
                 raise pl.ColumnNotFoundError
     else:
-        columns = table.columns
+        # Selecting only columns with strings
+        columns = table.select(cs.string(include_categorical=True)).columns
 
     # find the unique values
     unique_values = dict(
@@ -52,14 +59,17 @@ def find_unique_values(table: pl.DataFrame, columns: list[str] = None) -> dict:
 
 def measure_containment_tables(
     unique_values_base: dict, unique_values_candidate: dict
-) -> list:
+) -> pl.DataFrame:
     """Given `unique_values_base` and `unique_values_candidate`, measure the containment for each pair.
 
-    The result will be returned as a list with format `[(col_base_table_1, col_cand_table_1, similarity), (col_base_table_1, col_cand_table_2, similarity),]`
+    The result will be returned as a dataframe with columns "query_column", "cand_path", "cand_column", "containment".
 
     Args:
         unique_values_base (dict): Dictionary that contains the set of unique values for each column in the base (query) table.
         unique_values_candidate (dict): Dictionary that contains the set of unique values for each column in the candidate table.
+
+    Returns:
+        A dataframe that contains each candidate and the corresponding containment.
     """
     containment_list = []
     # TODO: this should absolutely get optimized
@@ -151,17 +161,32 @@ def execute_join(
 
 
 class Discover(BaseEstimator):
-    # TODO: this should extend the sklearn BaseEstimator
+    """The Discover object has the objective of finding candidate tables that may augment a table given by the user.
+    This is done by measuring the Jaccard Containment between a set of columns provided by the user (or all columns in the
+    main table), and all the columns found in the candidate tables provided by the user.
+
+    The discovery operation is done by the `fit` object. The `transform` object joins all candidates (limited by a given
+    budget) with the main table.
+    """
+
     def __init__(
         self,
         path_tables: list,
-        query_columns: (
-            list | str
-        ),  # TODO: maybe query_columns should be optional? depends on the caching
+        query_columns: list | str,
         path_cache: str | Path = None,
         budget=30,
         multiaggjoiner_params: dict | None = None,
     ) -> None:
+        """Initialize the Discover object. It takes as input the path to the tables (may be a pattern for glob), the list
+        of query columns that should be used, the max number of candidates that might be joined at transform time, and
+        an optional dictionary that contains the parameters to pass to MultiAggJoiner.
+
+        Args:
+            path_tables (list): Path (or glob pattern) to be explored to find the list of candidates.
+            query_columns (list  |  str): List of columns in the main table that should be used to find the Jaccard Containment.
+            budget (int, optional): Maximum number of candidates that should be considered for joining. Defaults to 30.
+            multiaggjoiner_params (dict | None, optional): Optional additional parameters to be passed to MultiAggJoiner. Defaults to None.
+        """
         # Assign parameters
         self.query_columns = query_columns
         self.budget = budget
