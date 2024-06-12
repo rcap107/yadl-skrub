@@ -4,21 +4,20 @@ from pathlib import Path
 import polars as pl
 import polars.selectors as cs
 from skrub import MultiAggJoiner
+from sklearn.base import BaseEstimator
 
 
-def load_tables_from_path(path_to_tables: str | Path):
+def load_table_paths(path_to_tables: str | Path):
     """Given `path_to_tables`, load all tables in memory and return them as a list.
 
     Args:
         path_to_tables (str | Path): Path to the tables.
     """
-    table_dict = {}
+    table_list = []
     # path expansion, search for tables
     for table_path in glob(path_to_tables):
-        table = pl.read_parquet(table_path)
-        # load tables in memory
-        table_dict[table_path] = table
-    return table_dict
+        table_list.append(Path(table_path))
+    return table_list
 
 
 def find_unique_values(table: pl.DataFrame, columns: list[str] = None) -> dict:
@@ -63,8 +62,8 @@ def measure_containment_tables(
         unique_values_candidate (dict): Dictionary that contains the set of unique values for each column in the candidate table.
     """
     containment_list = []
-    # for each value in unique_values_base, measure the containment for every value in unique_values_candidate
     # TODO: this should absolutely get optimized
+    # for each value in unique_values_base, measure the containment for every value in unique_values_candidate
     for path, dict_cand in unique_values_candidate.items():
         for col_base, values_base in unique_values_base.items():
             for col_cand, values_cand in dict_cand.items():
@@ -113,7 +112,7 @@ def prepare_ranking(containment_list: list[tuple], budget: int):
     return ranking.rows()
 
 
-def execute_join(base_table: pl.DataFrame, candidate_list: dict[tuple]):
+def execute_join(base_table: pl.DataFrame, candidate_list: dict[tuple], multiaggjoiner_params: dict | None = None):
     """Execute a full join between the base table and all candidates.
 
     Args:
@@ -132,68 +131,66 @@ def execute_join(base_table: pl.DataFrame, candidate_list: dict[tuple]):
         main_keys.append([main_table_key])
 
     # Use the Skrub MultiAggJoiner to join the base table and all candidates.
+    if multiaggjoiner_params is None:
+        multiaggjoiner_params = {}
     aggjoiner = MultiAggJoiner(
         aux_tables=join_tables,
         aux_keys=join_keys,
         main_keys=main_keys,
+        **multiaggjoiner_params
     )
     # execute join between X and the candidates
-    joined_table = aggjoiner.fit_transform(base_table)
+    _joined_table = aggjoiner.fit_transform(base_table)
 
     # Return the joined table
-    return joined_table
+    return _joined_table
 
 
-class Discover:
+class Discover(BaseEstimator):
     # TODO: this should extend the sklearn BaseEstimator
     def __init__(
         self,
         path_tables: list,
-        query_columns: list | str,
+        query_columns: list | str, # TODO: maybe query_columns should be optional? depends on the caching
         path_cache: str | Path = None,
         budget=30,
     ) -> None:
-        # Having more than 1 colummn is not supported yet.
-        if len(query_columns) > 1:
-            raise NotImplementedError
+        # Assign parameters
         self.query_columns = query_columns
-        # TODO: error checking budget
         self.budget = budget
+        self.path_tables = path_tables
+        self.path_cache = path_cache
 
-        #TODO: move everything to fit, no operation should be done in the init.
-        # load path from cache
-        if path_cache is not None:
-            raise NotImplementedError
-            # TODO: load ranking
-            self.ranking = None
-            pass
-        # not loading from cache
-        else:
-            self.ranking = None
-            # load list of tables
-            self.candidate_tables = load_tables_from_path(path_tables)
-
-            self.unique_values_candidates = {}
-            # find unique values for each table
-            for table_path, table in self.candidate_tables.items():
-                self.unique_values_candidates[table_path] = find_unique_values(table)
+        self._ranking = None
+        self._unique_values_candidates = {}
 
     def fit(self, X: pl.DataFrame, y=None):
-        # error checking query columns
+        # Having more than 1 colummn is not supported.
+        if len(self.query_columns) > 1:
+            raise NotImplementedError
         for col in self.query_columns:
             if col not in X.columns:
                 raise pl.ColumnNotFoundError(f"Column {col} not found in X.")
+
+        # load list of tables
+        self.candidate_paths = load_table_paths(self.path_tables)
+
+        # find unique values for each table
+        for table_path in self.candidate_paths:
+            table = pl.read_parquet(table_path)
+            self._unique_values_candidates[table_path] = find_unique_values(table)
+
         # find unique values for the query columns
         unique_values_X = find_unique_values(X, self.query_columns)
         # measure containment
         containment_list = measure_containment_tables(
-            unique_values_X, self.unique_values_candidates
+            unique_values_X, self._unique_values_candidates
         )
         # prepare ranking
-        self.ranking = prepare_ranking(containment_list, budget=self.budget)
+        self._ranking = prepare_ranking(containment_list, budget=self.budget)
 
     def transform(self, X):
-        _joined = execute_join(X, self.ranking)
+        _joined = execute_join(X, self._ranking)
         return _joined
 
     def fit_transform(self, X, y):
