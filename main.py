@@ -123,15 +123,18 @@ def prepare_ranking(containment_list: list[tuple], budget: int):
 
 
 def execute_join(
-    base_table: pl.DataFrame,
+    main_table: pl.DataFrame,
     candidate_list: dict[tuple],
     multiaggjoiner_params: dict | None = None,
-):
+) -> pl.DataFrame:
     """Execute a full join between the base table and all candidates.
 
     Args:
-        base_table (pl.DataFrame): _description_
-        candidate_list (dict[pl.DataFrame]): _description_
+        main_table (pl.DataFrame): The main table that all other tables will be joined on.
+        candidate_list (dict[pl.DataFrame]): The dictionary of candidates.
+        
+    Returns:
+        The joined table as a dataframe.
     """
 
     join_tables = []
@@ -154,7 +157,7 @@ def execute_join(
         **multiaggjoiner_params,
     )
     # execute join between X and the candidates
-    _joined_table = aggjoiner.fit_transform(base_table)
+    _joined_table = aggjoiner.fit_transform(main_table)
 
     # Return the joined table
     return _joined_table
@@ -200,9 +203,15 @@ class Discover(BaseEstimator):
         self._candidate_paths = None
 
     def fit(self, X: pl.DataFrame, y=None):
-        # Having more than 1 colummn is not supported.
-        if len(self.query_columns) > 1:
-            raise NotImplementedError
+        """Discover candidates given the main table X. Parameter y is ignored. 
+
+        Args:
+            X (pl.DataFrame): Dataframe to use to discover candidates. 
+            y (_type_, optional): Training target. Defaults to None.
+
+        Raises:
+            pl.ColumnNotFoundError: Raised if a query column is not found in X. 
+        """
         for col in self.query_columns:
             if col not in X.columns:
                 raise pl.ColumnNotFoundError(f"Column {col} not found in X.")
@@ -224,11 +233,29 @@ class Discover(BaseEstimator):
         # prepare ranking
         self._ranking = prepare_ranking(containment_list, budget=self.budget)
 
-    def transform(self, X):
+    def transform(self, X) -> pl.DataFrame:
+        """Execute the join between the main table X and the candidates discovered
+        during fit.
+
+        Args:
+            X (pl.DataFrame): Main table to transform.
+
+        Returns:
+            pl.DataFrame: The joined table.
+        """
         _joined = execute_join(X, self._ranking, self.multiaggjoiner_params)
         return _joined
 
-    def fit_transform(self, X, y):
+    def fit_transform(self, X, y) -> pl.DataFrame:
+        """Execute fit and transform sequentially.
+
+        Args:
+            X (pl.DataFrame): Main table to use for discovering candidates and joining.
+            y (_type_, optional): Training target. Defaults to None.
+
+        Returns:
+            pl.DataFrame: The joined table.
+        """
         self.fit(X, y)
         return self.transform(X)
 
